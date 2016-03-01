@@ -1,10 +1,13 @@
 #!/usr/bin/env python
+from __future__ import print_function
 
-import cPickle
+
+import pickle
 import sys
 import commands
 import os
 import re
+import pdb
 
 if sys.version_info < (2,6):
     from sets import Set
@@ -57,7 +60,17 @@ class UserException (Exception):
     def __init__(self, text):
         Exception.__init__(self, text)
 
+def to_bool(value):
+    """
+    Tries to convert a wide variety of values to a boolean
+    Raises an exception for unrecognised values
+    """
+    if str(value).lower() in ("yes","y","true","t","1","on"):
+        return True
+    if str(value).lower() in ("no","n","false","f","0","off"):
+        return False
 
+    raise Exception("Don't know how to convert " + str(value) + " to boolean.")
 
 def environ(variable, default):
     if default is None:
@@ -227,32 +240,33 @@ To build a dynamic library of the get_numbers.cpp file in the example tests
 
 def usage(msg = ""):
     if len(msg) > 0:
-        print >> sys.stderr, msg
-        print >> sys.stderr, ""
+        print(msg, file=sys.stderr)
+        print("", file=sys.stderr)
 
-    print usage_text.strip() + "\n"
+    print(usage_text.strip() + "\n")
 
     sys.exit(1)
 
 
 def printCakeVariables():
-    print "  ID        : " + CAKE_ID
-    print "  VARIANT   : " + Variant
-    print "  CPP       : " + CPP
-    print "  CC        : " + CC
-    print "  CXX       : " + CXX
-    print "  LINKER    : " + LINKER
-    print "  CPPFLAGS  : " + CPPFLAGS
-    print "  CFLAGS    : " + CFLAGS
-    print "  CXXFLAGS  : " + CXXFLAGS
-    print "  LINKFLAGS : " + LINKFLAGS    
-    print "  TESTPREFIX: " + TESTPREFIX
-    print "  POSTPREFIX: " + POSTPREFIX
-    print "  BINDIR    : " + BINDIR
-    print "  OBJDIR    : " + OBJDIR
-    print "  PARALLEL  : " + PARALLEL
-    print "  PROJECT_VERSION_CMD : " + PROJECT_VERSION_CMD
-    print "\n"
+    print("  ID        : " + CAKE_ID)
+    print("  VARIANT   : " + Variant)
+    print("  CPP       : " + CPP)
+    print("  CC        : " + CC)
+    print("  CXX       : " + CXX)
+    print("  LINKER    : " + LINKER)
+    print("  CPPFLAGS  : " + CPPFLAGS)
+    print("  CFLAGS    : " + CFLAGS)
+    print("  CXXFLAGS  : " + CXXFLAGS)
+    print("  LINKFLAGS : " + LINKFLAGS)    
+    print("  TESTPREFIX: " + TESTPREFIX)
+    print("  POSTPREFIX: " + POSTPREFIX)
+    print("  BINDIR    : " + BINDIR)
+    print("  OBJDIR    : " + OBJDIR)
+    print("  PARALLEL  : " + PARALLEL)
+    print("  PREPROCESS: " + str(PREPROCESS))
+    print("  PROJECT_VERSION_CMD : " + PROJECT_VERSION_CMD)
+    print("\n")
 
 
 def extractOption(text, option):
@@ -296,15 +310,13 @@ def munge(to_munge):
 def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
     """Recalculates the dependencies and caches them for a given source file"""
 
-    global CAKE_ID
-    
     if not quiet:
-        print "... " + source_file + " (dependencies)"
+        print("... " + source_file + " (dependencies)")
     
     cmd = CPP + CPPFLAGS + " -DCAKE_DEPS -MM -MF " + deps_file + ".tmp " + source_file
 
     if verbose:
-        print cmd
+        print(cmd)
 
     status, output = commands.getstatusoutput(cmd)
     if status != 0:
@@ -332,18 +344,34 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
     explicit_c = "//#" + CAKE_ID + "_CFLAGS="
     explicit_cxx = "//#" + CAKE_ID + "_CXXFLAGS="
     explicit_link = "//#" + CAKE_ID + "_LINKFLAGS="
+    explicit_source = "//#" + CAKE_ID + "_SOURCE="
     explicit_glob_c = "//#CFLAGS="
     explicit_glob_cxx = "//#CXXFLAGS="
     explicit_glob_link = "//#LINKFLAGS="
+    explicit_glob_source = "//#SOURCE="
 
     for h in headers + [source_file]:
         path = os.path.split(h)[0]
-        f = open(h)
-
-        # reading and handling as one string is slightly faster then
-        # handling a list of strings
-        text = f.read(2048)
-
+        text = ""
+        if PREPROCESS:       
+            # Preprocess but leave comments
+            i_file = deps_file.replace(".deps", ".i")
+            cmd = CPP + CPPFLAGS + " -C -E -o " + i_file + " " + h
+            if verbose:
+                print(cmd)
+            status,  output = status, output = commands.getstatusoutput(cmd)
+            if status != 0:
+                raise UserException(cmd + "\n" + output)
+            with open(i_file) as f:
+                text=f.read()
+            os.remove(i_file) # TODO.  Cache the i_file to avoid recreating
+        else:
+            # reading and handling as one string is slightly faster then
+            # handling a list of strings.
+            # Only read first 2k for speed
+            with open(h) as f:
+                text=f.read(2048)
+                
         found = False
 
         # first check for variant specific flags
@@ -354,7 +382,7 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_c + " = '" + result + "' for " + h
+                        print("explicit " + explicit_c + " = '" + result + "' for " + h)
                     result = result.replace("${path}", path)
                     cflags[result] = True
                     found = True
@@ -364,7 +392,7 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_cxx + " = '" + result + "' for " + h
+                        print("explicit " + explicit_cxx + " = '" + result + "' for " + h)
                     result = result.replace("${path}", path)
                     cxxflags[result] = True
                     found = True
@@ -374,8 +402,16 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_link + " = '" + result + "' for " + h
+                        print("explicit " + explicit_link + " = '" + result + "' for " + h)
                     linkflags.insert(result.replace("${path}", path))
+                    found = True
+            while True:
+                result, text = extractOption(text, explicit_source)
+                if result is None:
+                    break
+                else:
+                    if debug:
+                        print("explicit " + explicit_source + " = '" + result + "' for " + h)
                     found = True
 
         # if none, then check globals
@@ -386,7 +422,7 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_glob_c + " = '" + result + "' for " + h
+                        print("explicit " + explicit_glob_c + " = '" + result + "' for " + h)
                     result = result.replace("${path}", path)
                     cflags[result] = True
             while True:
@@ -395,7 +431,7 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_glob_cxx + " = '" + result + "' for " + h
+                        print("explicit " + explicit_glob_cxx + " = '" + result + "' for " + h)
                     result = result.replace("${path}", path)
                     cxxflags[result] = True                    
             while True:
@@ -404,15 +440,23 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
                     break
                 else:
                     if debug:
-                        print "explicit " + explicit_glob_link + " = '" + result + "' for " + h
+                        print("explicit " + explicit_glob_link + " = '" + result + "' for " + h)
                     linkflags.insert(result.replace("${path}", path))
+            while True:
+                result, text = extractOption(text, explicit_glob_source)
+                if result is None:
+                    break
+                else:
+                    #pdb.set_trace()
+                    if debug:
+                        print("explicit " + explicit_glob_source + " = '" + result + "' for " + h)
+                    sources.append(path+"/"+result)
 
-        f.close()
         pass
 
     # cache
     f = open(deps_file, "w")
-    cPickle.dump((headers, sources, cflags, cxxflags, linkflags), f)
+    pickle.dump((headers, sources, cflags, cxxflags, linkflags), f)
     f.close()
     if deps_file in stat_cache:
         del stat_cache[deps_file]
@@ -436,7 +480,7 @@ dependency_cache = {}
 
 def get_dependencies_for(source_file, quiet, verbose):
     """Converts a gcc make command into a set of headers and source dependencies"""    
-    
+    #pdb.set_trace() 
     global dependency_cache
 
     if source_file in dependency_cache:
@@ -452,7 +496,7 @@ def get_dependencies_for(source_file, quiet, verbose):
         
         try:
             f = open(deps_file)            
-            headers, sources, cflags, cxxflags, linkflags  = cPickle.load(f)
+            headers, sources, cflags, cxxflags, linkflags  = pickle.load(f)
             f.close()
         except:
             all_good = False
@@ -480,8 +524,9 @@ def get_dependencies_for(source_file, quiet, verbose):
 def insert_dependencies(sources, ignored, new_file, linkflags, cause, quiet, verbose, file_list):
     """Given a set of sources already being compiled, inserts the new file."""
     
+    #pdb.set_trace()
     if not new_file.startswith("/"):
-        raise Exception("bad")    
+        raise Exception("The new_file being examined needs to have a full path")    
     
     if new_file in sources:
         return
@@ -554,6 +599,13 @@ def lazily_write(filename, newtext):
 
 ignore_option_mash = [ '-fprofile-generate', '-fprofile-use' ]
 def objectname(source, entry):
+    """
+    Calculate a hash that identifies when a source file and compile options are constant.
+    Then use the source filename and the hash as the name for the object file.
+    The reasoning is that we want to avoid recompiling an object file if the source file and the compile options are the same 
+    but we must recompile if _either_ the source file or the compile options change.
+    The ignore_option_mash list contains the options that we can safely ignore from the hash.
+    """
     cflags, cxxflags, cause, headers = entry
     mash_name = "".join(cflags) + " " + CFLAGS + " " + "".join(cxxflags) + " " + CXXFLAGS + " "
 
@@ -563,6 +615,7 @@ def objectname(source, entry):
         mash_name += CXX
 
     mash_name = re.sub(r'CAKE_PROJECT_VERSION=\\".*?\\"', "", mash_name)
+    mash_name += str(PREPROCESS)
 
     o = mash_name.split();
     o.sort()
@@ -575,7 +628,7 @@ def objectname(source, entry):
             mash_inc += 'ignore'
 
     h = cake_hasher.md5( mash_inc ).hexdigest()
-    return munge(source) + str(len(str(mash_inc))) + "-" + h + ".o"
+    return munge(source) + "-" + str(len(str(mash_inc))) + "-" + h + ".o"
 
 
 
@@ -729,15 +782,15 @@ def do_generate(source_to_output, tests, post_steps, quiet, verbose, static_libr
 def do_build(makefilename, verbose):
     cmd="make -r " + {False:"-s ",True:""}[verbose] + "-f " + makefilename + " -j" + cpus()
     if verbose:
-        print cmd
+        print(cmd)
     result = os.system(cmd)
     if result != 0:
-        print
-        print "ERROR: Build failed."
+        print()
+        print("ERROR: Build failed.")
         sys.exit(1)
     elif verbose:
-        print
-        print "Build successful."
+        print()
+        print("Build successful.")
         
 
 
@@ -768,7 +821,6 @@ def main(config_file):
 
     # parse arguments
     args = sys.argv[1:]
-    appargs = []
     nextOutput = None
 
     generate = True
@@ -805,7 +857,7 @@ def main(config_file):
             # This reports on the current version of cake, not the version of the project being built by cake.
             # This relies on replacing the CAKE_PROJECT_VERSION_MACRO with an actual version number at packaging time
             # Don't confuse this with PROJECT_VERSION which is the version of the project that cake is building.
-            print "CAKE_PROJECT_VERSION_MACRO"
+            print("CAKE_PROJECT_VERSION_MACRO")
             return
 
     # deal with variant next
@@ -1003,27 +1055,27 @@ def main(config_file):
         git_root = find_git_root()
         if (git_root):
             if (verbose):
-                print "adding git root " + git_root            
+                print("adding git root " + git_root)            
             CPPFLAGS += " -I " + git_root
             CFLAGS += " -I " + git_root
             CXXFLAGS += " -I " + git_root
         else:
             if (verbose):
-                print "no git root found"
+                print("no git root found")
 
 	if include_git_parent:
 		git_root = find_git_root()
 		if (git_root):
 			git_parent = os.path.abspath(git_root+"/..")
 			if (verbose):
-				print "adding parent of git root " + git_parent
+				print("adding parent of git root " + git_parent)
 			             
 			CPPFLAGS += " -I " + git_parent
 			CFLAGS += " -I " + git_parent
 			CXXFLAGS += " -I " + git_parent
 		else:
 			if (verbose):
-				print "no git root found so can't include parent directory"
+				print("no git root found so can't include parent directory")
 			
     if len(Variant) == 0:
         raise "Variant has to be defined before here"
@@ -1069,13 +1121,13 @@ def main(config_file):
         pass
 
     
-    for c in to_build.keys()[:]:
+    for c in list(to_build.keys())[:]:
         if len(c.strip()) == 0:
             del to_build[c]
             continue
 
         if not stat(c):
-            print >> sys.stderr, c + " is not found."
+            print(c + " is not found.", file=sys.stderr)
             sys.exit(1)
 
     files_referenced = OrderedSet()
@@ -1085,9 +1137,9 @@ def main(config_file):
     if file_list:
         for src in files_referenced:
             if (git_root):
-                print os.path.relpath( src, git_root )
+                print(os.path.relpath( src, git_root ))
             else:
-                print src
+                print(src)
                 #print os.path.relpath( src )
 
     if build:
@@ -1126,6 +1178,7 @@ try:
     BINDIR="bin/"    # directory to write the generated executables
     OBJDIR=""        # directory to write any intermediate object files
     PARALLEL=""      # number of cpus to use concurrently
+    PREPROCESS=False # Should the source files be preprocessed _before_ the magic //# comments are read.
 
     # deal with configuration
     # Use configuration in the order (lowest to highest priority)
@@ -1168,16 +1221,17 @@ try:
     BINDIR = environ("CAKE_BINDIR", BINDIR)
     OBJDIR = environ("CAKE_OBJDIR", OBJDIR)
     PARALLEL = environ("CAKE_PARALLEL", PARALLEL)
+    PREPROCESS = to_bool(environ("CAKE_PREPROCESS", PREPROCESS))
     
     main(config_file)
 
 except SystemExit:
     raise
-except IOError,e :
-    print >> sys.stderr, str(e)
+except IOError as e :
+    print(str(e), file=sys.stderr)
     sys.exit(1)
-except UserException, e:
-    print >> sys.stderr, str(e)
+except UserException as e:
+    print(str(e), file=sys.stderr)
     sys.exit(1)
 except KeyboardInterrupt:
     sys.exit(1)
