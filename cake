@@ -126,12 +126,10 @@ Examples of variants are gcc46_release and clang_debug.
 Source annotations: 
     Embed these magic comments in your hpp and cpp files to give cake instructions on compilation and link flags.
 
-     //#CXXFLAGS=<flags>           Appends the given options to the compile step.
-     //#LINKFLAGS=<flags>          Appends the given options to the link step
-     //#SOURCE=<extra source file> Appends the given source file to the list to compile.  Useful for cross platform work when one header can have multiple source files.
-     //#GCC44_CXXFLAGS=<flags>     Appends the given options to the compile step when building with gcc 4.4.
-     //#GCC44_LINKFLAGS=<flags>    Appends the given options to the link step when building with gcc 4.4
-     //#GCC44_SOURCE=<file>        Appends extra source file to the compile list when building with gcc 4.4
+     //#CXXFLAGS=<flags>         Appends the given options to the compile step.
+     //#LINKFLAGS=<flags>        Appends the given options to the link step
+     //#GCC44_CXXFLAGS=<flags>   Appends the given options to the compile step when building with gcc 4.4.
+     //#GCC44_LINKFLAGS=<flags>  Appends the given options to the link step when building with gcc 4.4
      
      If no variant specific annotations are found, then the global variants are also
      searched. This allows default behaviour to be specified, while allowing
@@ -156,7 +154,7 @@ Environment:
     CAKE_OBJDIR                Sets the directory where all object files will be created.
     CAKE_PROJECT_VERSION_CMD   Sets the command to execute that will return the version number of the project being built. cake then sets a macro equal to this version.
     CAKE_PARALLEL              Sets the number of CPUs to use in parallel for a build.  Defaults to all cpus.
-    CAKE_PREPROCESS            Do you want the preprocessor to run before cake tries to find the magic //# comments.  Defaults to False because it is slower.
+    
 
 Options:
 
@@ -206,10 +204,10 @@ Options:
                            
     --no-git-root          Disable the git root include. 
 
-    --include-git-parent   If the git root exists then add the parent path as an include path.  
+	--include-git-parent   If the git root exists then add the parent path as an include path.  
 	                       Useful for combining code in multiple repositories.
 	                       
-    --no-git-parent        Disable the git root parent include (Default)
+	--no-git-parent        Disable the git root parent include (Default)
 	                       
     --begintests           Starts a test block. The cpp files following this declaration will
                            generate executables which are then run.
@@ -271,23 +269,77 @@ def printCakeVariables():
     print("\n")
 
 
-def extractOption(text, option):
-    """Extracts the given option from the text, returning the value
-    on success and the trimmed text as a tuple, or (None, originaltext)
-    on no match.
+def extractOptions(text, option_prefix) :
+    """Find all options matching beginning with option_prefix from the
+    text, to be called in iterative context. yield's (originfile, 
+    optionname, optionvalue)
     """
 
-    try:
-        length = len(option)
-        start = text.index(option)
-        end = text.index("\n", start + length)
+    idx = 0
+    while idx < len(text) :
+        prefix_idx = text.find(option_prefix, idx)
+        if prefix_idx == -1 :
+            return
+
+        # get the file this option comes from
+        origin_idx = text.rfind("\n# ", 0, prefix_idx)
+        if origin_idx == -1 :
+            origin_idx = 0 # first line of file, won't have preceding \n
+        else :
+            origin_idx += 1
+        origin_end = text.find("\n", origin_idx)
+        origin_str = text[origin_idx:origin_end]
+
+        # origin line looks like # 1 "/path/to/source.c", get just that path
+        fn_idx = origin_str.find('"')
+        fn_end = origin_str.rfind('"')
+        origin_fn = origin_str[fn_idx+1:fn_end]
         
-        result = text[start + length:end]
-        trimmed = text[:start] + text[end+1:]
-        return result, trimmed
-        
-    except ValueError:
-        return None, text
+        option_end = text.find("\n", prefix_idx)
+        if option_end == -1 :
+            option_end = len(text)
+        option_str = text[prefix_idx+len(option_prefix):option_end]
+        a = option_str.split("=", 1)
+        if len(a) > 1 :
+            yield (origin_fn, a[0], a[1])
+
+        idx = option_end
+
+def accumulateOptions(text, option_prefix, options) :
+    """Call extractOptions searching for any option with option_prefix,
+    for each one found if that option is in options, accumulate
+    the value of that option into a list and put it into a dictionary
+    that is subsequently returned.
+    """
+
+    all_options = {}
+
+    for origin_fn, option_name, option_value in extractOptions(text, option_prefix) :
+        if option_name in options :
+            arr = all_options.get(option_name, [])
+            arr.append( (origin_fn, option_value) )
+            all_options[option_name] = arr
+
+    return all_options
+
+def joinPaths(origin_file, file_path) :
+    """Given a pathname to a file, origin_file, and the pathname file_path,
+    join them such that we take the directory portion of origin_file and
+    add to that a normalized file_path, eliding any . or .. found.
+    """
+    
+    if file_path[0] == '/' :
+        return file_path
+    dir_parts = origin_file.split('/')[0:-1] # remove the filename from the end
+    file_parts = file_path.split('/')
+    for i in file_parts :
+        if i == '.' :
+            pass
+        elif i == '..' :
+            dir_parts.pop()
+        else :
+            dir_parts.append(i)
+    return '/'.join(dir_parts)
 
 
 realpath_cache = {}
@@ -343,14 +395,15 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
     cxxflags = {}
     linkflags = OrderedSet()
 
-    explicit_c = "//#" + CAKE_ID + "_CFLAGS="
-    explicit_cxx = "//#" + CAKE_ID + "_CXXFLAGS="
-    explicit_link = "//#" + CAKE_ID + "_LINKFLAGS="
-    explicit_source = "//#" + CAKE_ID + "_SOURCE="
-    explicit_glob_c = "//#CFLAGS="
-    explicit_glob_cxx = "//#CXXFLAGS="
-    explicit_glob_link = "//#LINKFLAGS="
-    explicit_glob_source = "//#SOURCE="
+    option_prefix = "//#"
+    explicit_c =  CAKE_ID + "_CFLAGS"
+    explicit_cxx = CAKE_ID + "_CXXFLAGS"
+    explicit_link = CAKE_ID + "_LINKFLAGS"
+    explicit_source = CAKE_ID + "_SOURCE"
+    explicit_glob_c = "CFLAGS"
+    explicit_glob_cxx = "CXXFLAGS"
+    explicit_glob_link = "LINKFLAGS"
+    explicit_glob_source = "SOURCE"
 
     path = os.path.split(h)[0]
     text = ""
@@ -374,96 +427,67 @@ def force_get_dependencies_for(deps_file, source_file, quiet, verbose):
             with open(h) as f:
                 text+=f.read(2048)
                 
+    option_set = set([
+        explicit_c,
+        explicit_cxx,
+        explicit_link,
+        explicit_source,
+        explicit_glob_c,
+        explicit_glob_cxx,
+        explicit_glob_link,
+        explicit_glob_source
+    ])
     found = False
+
+    all_options = accumulateOptions(text, option_prefix, option_set)
 
     # first check for variant specific flags
     if len(CAKE_ID) > 0:
-        while True:
-            result, text = extractOption(text, explicit_c)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_c + " = '" + result + "' for " + source_file)
-                result = result.replace("${path}", path)
-                cflags[result] = True
-                found = True
-        while True:
-            result, text = extractOption(text, explicit_cxx)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_cxx + " = '" + result + "' for " + source_file)
-                result = result.replace("${path}", path)
-                cxxflags[result] = True
-                found = True
-        while True:
-            result, text = extractOption(text, explicit_link)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_link + " = '" + result + "' for " + source_file)
-                linkflags.insert(result.replace("${path}", path))
-                found = True
-        while True:
-            result, text = extractOption(text, explicit_source)
-            if result is None:
-                break
-            else:
-                if result[0] != '/' :
-                    result_path = os.path.split(source_file)[0] + '/' + result
-                else :
-                    result_path = result
-
-                if debug:
-                    print("explicit " + explicit_glob_source + " = '" + result_path + "' for " + source_file)
-                sources.append(result_path) 
-                found = True              
+        for result_origin, result in all_options.get(explicit_c, []) :
+            if debug:
+                print("explicit " + explicit_c + " = '" + result + "' for " + source_file)
+            result = result.replace("${path}", path)
+            cflags[result] = True
+            found = True
+        for result_origin, result in all_options.get(explicit_cxx, []) :
+            if debug:
+                print("explicit " + explicit_cxx + " = '" + result + "' for " + source_file)
+            result = result.replace("${path}", path)
+            cxxflags[result] = True
+            found = True
+        for result_origin, result in all_options.get(explicit_link, []) :
+            if debug:
+                print("explicit " + explicit_link + " = '" + result + "' for " + source_file)
+            linkflags.insert(result.replace("${path}", path))
+            found = True
+        for result_origin, result in all_options.get(explicit_source, []) :
+            result_path = joinPaths(result_origin, result)
+            if debug:
+                print("explicit " + explicit_source + " = '" + result_path + "' for " + source_file)
+            sources.append(result_path) 
+            found = True              
 
     # if none, then check globals
     if not found:
-        while True:
-            result, text = extractOption(text, explicit_glob_c)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_glob_c + " = '" + result + "' for " + source_file)
-                result = result.replace("${path}", path)
-                cflags[result] = True
-        while True:
-            result, text = extractOption(text, explicit_glob_cxx)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_glob_cxx + " = '" + result + "' for " + source_file)
-                result = result.replace("${path}", path)
-                cxxflags[result] = True                    
-        while True:
-            result, text = extractOption(text, explicit_glob_link)
-            if result is None:
-                break
-            else:
-                if debug:
-                    print("explicit " + explicit_glob_link + " = '" + result + "' for " + source_file)
-                linkflags.insert(result.replace("${path}", path))
-        while True:
-            result, text = extractOption(text, explicit_glob_source)
-            if result is None:
-                break
-            else:
-                #pdb.set_trace()
-                if result[0] != '/' :
-                    result_path = os.path.split(source_file)[0] + '/' + result
-                else :
-                    result_path = result
-
-                if debug:
-                    print("explicit " + explicit_glob_source + " = '" + result_path + "' for " + source_file)
-                sources.append(result_path)
+        for result_origin, result in all_options.get(explicit_glob_c, []) :
+            if debug:
+                print("explicit " + explicit_glob_c + " = '" + result + "' for " + source_file)
+            result = result.replace("${path}", path)
+            cflags[result] = True
+        for result_origin, result in all_options.get(explicit_glob_cxx, []) :
+            if debug:
+                print("explicit " + explicit_glob_cxx + " = '" + result + "' for " + source_file)
+            result = result.replace("${path}", path)
+            cxxflags[result] = True                    
+        for result_origin, result in all_options.get(explicit_glob_link, []) :
+            if debug:
+                print("explicit " + explicit_glob_link + " = '" + result + "' for " + source_file)
+            linkflags.insert(result.replace("${path}", path))
+        for result_origin, result in all_options.get(explicit_glob_source, []) :
+            result_path = joinPaths(result_origin, result)
+            if debug:
+                print("explicit " + explicit_glob_source + " = '" + result_path + "' for " + source_file)
+            sources.append(result_path)
 
     # cache
     f = open(deps_file, "w")
